@@ -226,7 +226,7 @@ export async function validateUploadedProjectZip(zipPath) {
   result.installableScore = scoreValidation(result);
 
   pushUnique(notes, result.buildReady ? 'ZIP project passed the core checks for Android wrapper preparation.' : 'ZIP project needs a manifest, icons, and service worker before production packaging.');
-  pushUnique(notes, 'For iOS, SP Builder can prepare an export package and review pack, but final IPA signing and App Store submission still require Xcode on macOS.');
+  pushUnique(notes, 'For iOS, Life Builder can prepare an export package and review pack, but final IPA signing and App Store submission still require Xcode on macOS.');
 
   return { normalizedSiteUrl: '', validation: result };
 }

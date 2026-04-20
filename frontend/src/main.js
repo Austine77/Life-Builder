@@ -4,7 +4,10 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:100
 
 const state = {
   projects: [],
-  system: null
+  system: null,
+  loading: true,
+  message: '',
+  error: ''
 };
 
 const app = document.querySelector('#app');
@@ -18,16 +21,23 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function setNotice(message = '', type = 'info') {
+  state.message = message;
+  state.error = type === 'error' ? message : '';
+}
+
 async function fetchJson(url, options = {}) {
   let response;
   try {
     response = await fetch(url, options);
   } catch (error) {
-    throw new Error(`Network error while contacting ${url}. ${error.message}`);
+    throw new Error(`Could not connect to ${url}. ${error.message}`);
   }
 
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || `Request failed with HTTP ${response.status}.`);
+  if (!response.ok) {
+    throw new Error(data.message || `Request failed with HTTP ${response.status}.`);
+  }
   return data;
 }
 
@@ -37,14 +47,15 @@ async function downloadArtifact(projectId, artifactKey, suggestedName) {
     const data = await response.json().catch(() => ({}));
     throw new Error(data.message || 'Download failed.');
   }
+
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = suggestedName || 'download';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = suggestedName || 'download';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
   URL.revokeObjectURL(url);
 }
 
@@ -52,96 +63,51 @@ function badge(text, tone = '') {
   return `<span class="pill ${tone}">${escapeHtml(text)}</span>`;
 }
 
-function notesList(notes = []) {
-  return Array.isArray(notes) && notes.length
-    ? `<ul class="note-list">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join('')}</ul>`
-    : '<p class="muted">No validation notes yet.</p>';
+function statusTone(value) {
+  if (value === 'built' || value === 'validated') return 'ok';
+  if (value === 'failed' || value === 'invalid') return 'bad';
+  if (value === 'building') return 'warn';
+  return '';
 }
 
-function artifactButtons(project) {
-  const entries = [
-    ['apkRelativePath', 'app-release.apk'],
-    ['aabRelativePath', 'app-release.aab'],
-    ['projectZipRelativePath', 'project-export.zip'],
-    ['iosHandoffZipRelativePath', 'ios-handoff.zip'],
-    ['reviewPackRelativePath', 'store-review-pack.json'],
-    ['buildLogRelativePath', 'build-log.txt'],
-    ['uploadedZipRelativePath', 'uploaded-source.zip']
-  ].filter(([key]) => project.artifacts?.[key]);
-
-  if (!entries.length) return '<p class="muted">No artifacts generated yet.</p>';
-
-  return `<div class="artifact-grid">${entries
-    .map(([key, label]) => `<button class="button tiny secondary download-btn" data-project-id="${project._id}" data-artifact-key="${key}" data-label="${escapeHtml(label)}">${escapeHtml(label)}</button>`)
-    .join('')}</div>`;
-}
-
-function projectHealthTone(project) {
-  const score = Number(project.validation?.installableScore || 0);
+function scoreTone(score) {
   if (score >= 80) return 'ok';
   if (score >= 50) return 'warn';
   return 'bad';
 }
 
-function projectCard(project) {
-  const platforms = (project.requestedPlatforms || []).join(', ') || 'android';
-  const score = Number(project.validation?.installableScore || 0);
+function selectedOptions(name) {
+  return Array.from(document.querySelector(`[name="${name}"]`)?.selectedOptions || []).map((option) => option.value);
+}
+
+function artifactButtons(project) {
+  const files = [
+    ['apkRelativePath', 'app-release.apk'],
+    ['aabRelativePath', 'app-release.aab'],
+    ['projectZipRelativePath', 'project-export.zip'],
+    ['iosHandoffZipRelativePath', 'ios-handoff.zip'],
+    ['reviewPackRelativePath', 'store-review-pack.json'],
+    ['buildLogRelativePath', 'build.log'],
+    ['uploadedZipRelativePath', 'uploaded-source.zip']
+  ].filter(([key]) => project.artifacts?.[key]);
+
+  if (!files.length) return '<p class="muted">No downloadable artifacts yet.</p>';
 
   return `
-    <article class="project-card">
-      <div class="project-head">
-        <div>
-          <div class="project-kicker">${project.sourceType === 'url' ? 'Hosted site project' : 'Uploaded source project'}</div>
-          <h3>${escapeHtml(project.appName)}</h3>
-          <p class="muted project-subtext">${project.sourceType === 'url' ? escapeHtml(project.siteUrl || 'Hosted URL') : `Uploaded ZIP: ${escapeHtml(project.uploadOriginalName || 'project.zip')}`}</p>
-          <p class="muted">Package ID: ${escapeHtml(project.packageId)}</p>
-        </div>
-        <div class="status-chip ${escapeHtml(project.status)}">${escapeHtml(project.status)}</div>
-      </div>
-
-      <div class="score-band ${projectHealthTone(project)}">
-        <span>Validation score</span>
-        <strong>${score}%</strong>
-      </div>
-
-      <div class="meta-row wrap">
-        ${badge(`Source: ${project.sourceType.toUpperCase()}`)}
-        ${badge(`Platforms: ${platforms}`)}
-        ${badge(`Manifest ${project.validation?.manifestFound ? 'found' : 'missing'}`, project.validation?.manifestFound ? 'ok' : 'bad')}
-        ${badge(`Service worker ${project.validation?.serviceWorkerDetected ? 'detected' : 'missing'}`, project.validation?.serviceWorkerDetected ? 'ok' : 'bad')}
-        ${badge(`Icons ${project.validation?.hasAnyIcon ? 'ready' : 'missing'}`, project.validation?.hasAnyIcon ? 'ok' : 'bad')}
-        ${badge(`Android ${project.validation?.buildReady ? 'ready' : 'not ready'}`, project.validation?.buildReady ? 'ok' : 'warn')}
-        ${badge(`iOS ${project.validation?.iosReady ? 'handoff ready' : 'needs review'}`, project.validation?.iosReady ? 'ok' : 'warn')}
-      </div>
-
-      <div class="project-body-grid">
-        <div>
-          <h4>Validation notes</h4>
-          ${notesList(project.validation?.notes)}
-        </div>
-        <div class="mini-panel">
-          <h4>Output summary</h4>
-          <div class="summary-list">
-            <div><span>Status</span><strong>${escapeHtml(project.status)}</strong></div>
-            <div><span>Android</span><strong>${project.validation?.buildReady ? 'Ready' : 'Needs fixes'}</strong></div>
-            <div><span>iOS</span><strong>${project.validation?.iosReady ? 'Handoff ready' : 'Needs review'}</strong></div>
-          </div>
-        </div>
-      </div>
-
-      ${project.lastBuildError ? `<div class="error-box">${escapeHtml(project.lastBuildError)}</div>` : ''}
-
-      <div class="actions-row">
-        <button class="button primary build-btn" data-id="${project._id}">Generate build/export</button>
-        <button class="button secondary refresh-project-btn" data-id="${project._id}">Refresh details</button>
-      </div>
-
-      <div class="artifact-section">
-        <h4>Artifacts</h4>
-        ${artifactButtons(project)}
-      </div>
-    </article>
+    <div class="artifact-grid">
+      ${files
+        .map(
+          ([key, label]) =>
+            `<button class="button tiny secondary download-btn" data-project-id="${project._id}" data-artifact-key="${key}" data-label="${escapeHtml(label)}">${escapeHtml(label)}</button>`
+        )
+        .join('')}
+    </div>
   `;
+}
+
+function notesList(notes = []) {
+  if (!Array.isArray(notes) || !notes.length) return '<p class="muted">No validation notes yet.</p>';
+  return `<ul class="note-list">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join('')}</ul>`;
 }
 
 function statCard(label, value, detail = '', tone = '') {
@@ -154,59 +120,121 @@ function statCard(label, value, detail = '', tone = '') {
   `;
 }
 
-function featureCard(title, text) {
+function projectCard(project) {
+  const validation = project.validation || {};
+  const score = Number(validation.installableScore || 0);
+  const platforms = Array.isArray(project.requestedPlatforms) && project.requestedPlatforms.length ? project.requestedPlatforms.join(', ') : 'android';
+
   return `
-    <article class="feature-card panel">
-      <div class="feature-icon"></div>
-      <h3>${escapeHtml(title)}</h3>
-      <p class="muted">${escapeHtml(text)}</p>
+    <article class="project-card">
+      <div class="project-head">
+        <div>
+          <div class="project-kicker">${project.sourceType === 'url' ? 'Hosted site project' : 'Uploaded ZIP project'}</div>
+          <h3>${escapeHtml(project.appName)}</h3>
+          <p class="muted project-subtext">${project.sourceType === 'url' ? escapeHtml(project.siteUrl || 'Hosted URL') : `Uploaded ZIP: ${escapeHtml(project.uploadOriginalName || 'project.zip')}`}</p>
+          <p class="muted">Package ID: ${escapeHtml(project.packageId || '')}</p>
+        </div>
+        <div class="status-chip ${statusTone(project.status)}">${escapeHtml(project.status || 'draft')}</div>
+      </div>
+
+      <div class="score-band ${scoreTone(score)}">
+        <span>Validation score</span>
+        <strong>${score}%</strong>
+      </div>
+
+      <div class="meta-row wrap">
+        ${badge(`Platforms: ${platforms}`)}
+        ${badge(`Manifest ${validation.manifestFound ? 'found' : 'missing'}`, validation.manifestFound ? 'ok' : 'bad')}
+        ${badge(`Service worker ${validation.serviceWorkerDetected ? 'detected' : 'missing'}`, validation.serviceWorkerDetected ? 'ok' : 'bad')}
+        ${badge(`Icons ${validation.hasAnyIcon ? 'ready' : 'missing'}`, validation.hasAnyIcon ? 'ok' : 'bad')}
+        ${badge(`Android ${validation.buildReady ? 'ready' : 'needs fixes'}`, validation.buildReady ? 'ok' : 'warn')}
+        ${badge(`iOS ${validation.iosReady ? 'handoff ready' : 'needs review'}`, validation.iosReady ? 'ok' : 'warn')}
+      </div>
+
+      <div class="project-body-grid">
+        <div>
+          <h4>Validation notes</h4>
+          ${notesList(validation.notes)}
+        </div>
+        <div class="mini-panel">
+          <h4>Output summary</h4>
+          <div class="summary-list">
+            <div><span>Status</span><strong>${escapeHtml(project.status || '-')}</strong></div>
+            <div><span>Android</span><strong>${validation.buildReady ? 'Ready' : 'Needs fixes'}</strong></div>
+            <div><span>iOS</span><strong>${validation.iosReady ? 'Handoff ready' : 'Needs review'}</strong></div>
+          </div>
+        </div>
+      </div>
+
+      ${project.lastBuildError ? `<div class="error-box">${escapeHtml(project.lastBuildError)}</div>` : ''}
+
+      <div class="actions-row wrap">
+        <button class="button primary build-btn" data-id="${project._id}">Generate build/export</button>
+        <button class="button secondary refresh-project-btn" data-id="${project._id}">Refresh details</button>
+      </div>
+
+      <div class="artifact-section">
+        <h4>Artifacts</h4>
+        ${artifactButtons(project)}
+      </div>
     </article>
   `;
 }
 
 function appView() {
+  const system = state.system || {};
+  const database = system.database || {};
+  const noticeHtml = state.error
+    ? `<div class="notice error">${escapeHtml(state.error)}</div>`
+    : state.message
+      ? `<div class="notice info">${escapeHtml(state.message)}</div>`
+      : '';
+
   return `
     <div class="marketing-shell">
       <section class="shell app-shell">
-        <div class="marketing-topbar">
+        <header class="marketing-topbar panel compact-panel">
           <div class="brand-lockup">
-            <div class="brand-mark">SP</div>
+            <div class="brand-mark">LB</div>
             <div>
               <div class="brand-title">Life Builder</div>
-              <div class="brand-subtitle">Simple app conversion workspace</div>
+              <div class="brand-subtitle">Simple website-to-app export workspace</div>
             </div>
           </div>
-          <div class="trust-copy">No signup. No login. Paste a link or upload a ZIP and generate your export package.</div>
-        </div>
+          <div class="trust-copy">No signup. No login. Submit a hosted link or ZIP and generate Android and iOS export files.</div>
+        </header>
 
-        <section class="landing-grid">
+        ${noticeHtml}
+
+        <section class="landing-grid section-gap">
           <div class="hero-card hero-surface">
-            <div class="eyebrow">Fast app conversion flow</div>
-            <h1>Turn your website or ZIP project into mobile app export packages.</h1>
-            <p class="lead">Life Builder checks app readiness, prepares Android export artifacts, creates iOS handoff files, and keeps everything in one simple dashboard for your team.</p>
+            <div class="eyebrow">Professional app conversion platform</div>
+            <h1>Turn your website or source ZIP into real mobile app delivery files.</h1>
+            <p class="lead">Life Builder checks installability, prepares Android export packages, creates iOS handoff files, and keeps each submission in one clean workspace.</p>
             <div class="hero-tags">
-              ${badge('No signup needed')}
-              ${badge('Hosted URL or ZIP upload')}
-              ${badge('Android export workflow')}
-              ${badge('iOS handoff workflow')}
+              ${badge('Simple public workspace')}
+              ${badge('Hosted URL validation')}
+              ${badge('ZIP upload validation')}
+              ${badge('Android and iOS outputs')}
             </div>
-            <div class="showcase-grid">
-              ${statCard('Submission modes', '2', 'Hosted URL and project ZIP')}
-              ${statCard('Outputs', 'Android + iOS', 'Export and handoff packs')}
-              ${statCard('Experience', 'Simple', 'Direct public workspace')}
+            <div class="showcase-grid section-gap-small">
+              ${statCard('Projects', String(state.projects.length), 'Recent submissions on this workspace')}
+              ${statCard('Android builds', system.androidBuildsEnabled ? 'Enabled' : 'Export mode', system.androidBuildsEnabled ? 'Bubblewrap runtime available' : 'Exports and review packs only', system.androidBuildsEnabled ? 'ok' : 'warn')}
+              ${statCard('Database', database.connected ? 'Connected' : 'Offline', database.connected ? 'Ready for submissions' : (database.lastError || 'Check MONGODB_URI'), database.connected ? 'ok' : 'bad')}
             </div>
           </div>
-          <div class="stack">
-            ${featureCard('Submit a hosted URL', 'Validate a live PWA or website and prepare Android and iOS-ready export packages.')}
-            ${featureCard('Upload a project ZIP', 'Send your packaged source files to check icons, manifest, service worker, and store readiness.')}
-            ${featureCard('Generate deliverables', 'Download build logs, store review packs, exported project files, and iOS handoff bundles.')}
-          </div>
-        </section>
 
-        <section class="dashboard-stats compact">
-          ${statCard('Projects', String(state.projects.length), 'All recent submissions on this workspace')}
-          ${statCard('Android builds', state.system?.androidBuildsEnabled ? 'Enabled' : 'Disabled', state.system?.androidBuildsEnabled ? 'Bubblewrap runtime available' : 'Exports only until enabled')}
-          ${statCard('Database', state.system?.database?.connected ? 'Connected' : 'Offline', state.system?.database?.connected ? 'Ready for project records' : 'Check MongoDB connection', state.system?.database?.connected ? 'ok' : 'bad')}
+          <div class="panel stack side-panel">
+            <div>
+              <div class="eyebrow">How it works</div>
+              <h2>Three clear steps</h2>
+            </div>
+            <div class="timeline-list">
+              <div class="timeline-item"><strong>1. Submit</strong><span>Paste a hosted link or upload your project ZIP.</span></div>
+              <div class="timeline-item"><strong>2. Validate</strong><span>Check manifest, icons, service worker, and app-store readiness signals.</span></div>
+              <div class="timeline-item"><strong>3. Export</strong><span>Generate Android export files, iOS handoff bundles, and review packs.</span></div>
+            </div>
+          </div>
         </section>
 
         <section class="submission-grid section-gap">
@@ -214,12 +242,12 @@ function appView() {
             <div>
               <div class="eyebrow">Hosted URL</div>
               <h2>Submit a live site</h2>
-              <p class="muted">Paste your deployed URL and choose the platforms you want to prepare.</p>
+              <p class="muted">Best for deployed PWAs and live web apps.</p>
             </div>
             <label><span>Site URL</span><input name="siteUrl" type="url" placeholder="https://your-app.onrender.com" required /></label>
-            <label><span>App name</span><input name="appName" placeholder="My App" required /></label>
-            <label><span>Launcher name</span><input name="launcherName" placeholder="My App" required /></label>
-            <label><span>Package ID</span><input name="packageId" placeholder="com.company.myapp" /></label>
+            <label><span>App name</span><input name="appName" type="text" placeholder="My App" required /></label>
+            <label><span>Launcher name</span><input name="launcherName" type="text" placeholder="My App" required /></label>
+            <label><span>Package ID</span><input name="packageId" type="text" placeholder="com.company.myapp" /></label>
             <label><span>Platforms</span>
               <select name="requestedPlatforms" multiple>
                 <option value="android" selected>Android</option>
@@ -231,14 +259,14 @@ function appView() {
 
           <form id="uploadForm" class="panel stack" enctype="multipart/form-data">
             <div>
-              <div class="eyebrow">ZIP upload</div>
-              <h2>Upload a project ZIP</h2>
-              <p class="muted">Upload your app source ZIP to validate its installability and export readiness.</p>
+              <div class="eyebrow">Project ZIP</div>
+              <h2>Upload source files</h2>
+              <p class="muted">Best for source packages that are not hosted yet.</p>
             </div>
             <label><span>Project ZIP</span><input name="projectZip" type="file" accept=".zip" required /></label>
-            <label><span>App name</span><input name="appName" placeholder="My App" required /></label>
-            <label><span>Launcher name</span><input name="launcherName" placeholder="My App" required /></label>
-            <label><span>Package ID</span><input name="packageId" placeholder="com.company.myapp" /></label>
+            <label><span>App name</span><input name="appName" type="text" placeholder="My App" required /></label>
+            <label><span>Launcher name</span><input name="launcherName" type="text" placeholder="My App" required /></label>
+            <label><span>Package ID</span><input name="packageId" type="text" placeholder="com.company.myapp" /></label>
             <label><span>Platforms</span>
               <select name="requestedPlatforms" multiple>
                 <option value="android" selected>Android</option>
@@ -257,8 +285,8 @@ function appView() {
             </div>
             <button class="button secondary" id="refreshProjectsBtn">Refresh list</button>
           </div>
-          <div id="projectsWrap" class="stack">
-            ${state.projects.length ? state.projects.map(projectCard).join('') : '<p class="muted">No projects yet. Submit a hosted link or ZIP above.</p>'}
+          <div id="projectsWrap" class="stack project-stack">
+            ${state.loading ? '<p class="muted">Loading projects...</p>' : state.projects.length ? state.projects.map(projectCard).join('') : '<p class="muted">No projects yet. Submit a hosted link or ZIP above.</p>'}
           </div>
         </section>
       </section>
@@ -274,17 +302,13 @@ function setBusy(target, isBusy, label = 'Please wait...') {
     target.textContent = label;
   } else {
     target.disabled = false;
-    if (target.dataset.originalText) target.textContent = target.dataset.originalText;
+    target.textContent = target.dataset.originalText || target.textContent;
   }
-}
-
-function getSelectedValues(select) {
-  return Array.from(select?.selectedOptions || []).map((option) => option.value);
 }
 
 async function refreshProjects() {
   const data = await fetchJson(`${API_BASE_URL}/projects`);
-  state.projects = data.projects || [];
+  state.projects = Array.isArray(data.projects) ? data.projects : [];
 }
 
 async function refreshSystem() {
@@ -293,18 +317,23 @@ async function refreshSystem() {
 
 async function refreshProject(projectId) {
   const data = await fetchJson(`${API_BASE_URL}/projects/${projectId}`);
-  const index = state.projects.findIndex((item) => item._id === projectId);
-  if (index >= 0) state.projects[index] = data.project;
-  else state.projects.unshift(data.project);
+  const incoming = data.project;
+  const index = state.projects.findIndex((item) => item._id === incoming._id);
+  if (index >= 0) state.projects[index] = incoming;
+  else state.projects.unshift(incoming);
 }
 
 function bindAppEvents() {
   document.querySelector('#refreshProjectsBtn')?.addEventListener('click', async () => {
     try {
+      setNotice('Refreshing project list...');
+      render();
       await refreshProjects();
+      setNotice('Project list updated.');
       render();
     } catch (error) {
-      alert(error.message);
+      setNotice(error.message, 'error');
+      render();
     }
   });
 
@@ -315,11 +344,11 @@ function bindAppEvents() {
     setBusy(button, true, 'Submitting...');
     try {
       const body = {
-        siteUrl: form.siteUrl.value,
-        appName: form.appName.value,
-        launcherName: form.launcherName.value,
-        packageId: form.packageId.value,
-        requestedPlatforms: getSelectedValues(form.requestedPlatforms)
+        siteUrl: form.siteUrl.value.trim(),
+        appName: form.appName.value.trim(),
+        launcherName: form.launcherName.value.trim(),
+        packageId: form.packageId.value.trim(),
+        requestedPlatforms: selectedOptions('requestedPlatforms')
       };
       const data = await fetchJson(`${API_BASE_URL}/projects/url`, {
         method: 'POST',
@@ -328,10 +357,11 @@ function bindAppEvents() {
       });
       state.projects.unshift(data.project);
       form.reset();
+      setNotice('Hosted site project created successfully.');
       render();
-      alert('Project created successfully.');
     } catch (error) {
-      alert(error.message);
+      setNotice(error.message, 'error');
+      render();
     } finally {
       setBusy(button, false);
     }
@@ -345,17 +375,20 @@ function bindAppEvents() {
     try {
       const dataForm = new FormData(form);
       dataForm.delete('requestedPlatforms');
-      getSelectedValues(form.requestedPlatforms).forEach((value) => dataForm.append('requestedPlatforms', value));
+      Array.from(form.requestedPlatforms.selectedOptions).forEach((option) => {
+        dataForm.append('requestedPlatforms', option.value);
+      });
       const data = await fetchJson(`${API_BASE_URL}/projects/upload`, {
         method: 'POST',
         body: dataForm
       });
       state.projects.unshift(data.project);
       form.reset();
+      setNotice('ZIP project created successfully.');
       render();
-      alert('ZIP project created successfully.');
     } catch (error) {
-      alert(error.message);
+      setNotice(error.message, 'error');
+      render();
     } finally {
       setBusy(button, false);
     }
@@ -368,10 +401,11 @@ function bindAppEvents() {
       try {
         await fetchJson(`${API_BASE_URL}/projects/${projectId}/build`, { method: 'POST' });
         await refreshProject(projectId);
+        setNotice('Build/export completed.');
         render();
-        alert('Build/export completed.');
       } catch (error) {
-        alert(error.message);
+        setNotice(error.message, 'error');
+        render();
       } finally {
         setBusy(button, false);
       }
@@ -384,9 +418,11 @@ function bindAppEvents() {
       setBusy(button, true, 'Refreshing...');
       try {
         await refreshProject(projectId);
+        setNotice('Project details refreshed.');
         render();
       } catch (error) {
-        alert(error.message);
+        setNotice(error.message, 'error');
+        render();
       } finally {
         setBusy(button, false);
       }
@@ -401,8 +437,11 @@ function bindAppEvents() {
       setBusy(button, true, 'Downloading...');
       try {
         await downloadArtifact(projectId, artifactKey, label);
+        setNotice(`Download started for ${label}.`);
+        render();
       } catch (error) {
-        alert(error.message);
+        setNotice(error.message, 'error');
+        render();
       } finally {
         setBusy(button, false);
       }
@@ -411,17 +450,34 @@ function bindAppEvents() {
 }
 
 function render() {
+  if (!app) {
+    throw new Error('Root element #app was not found.');
+  }
   app.innerHTML = appView();
   bindAppEvents();
 }
 
 async function init() {
+  render();
   try {
     await Promise.all([refreshSystem(), refreshProjects()]);
+    state.loading = false;
+    if (!state.system?.database?.connected) {
+      setNotice(state.system?.database?.lastError || 'Database is offline. The page still loads, but submissions will fail until MongoDB is connected.', 'error');
+    } else {
+      setNotice('Life Builder is ready.');
+    }
   } catch (error) {
-    console.error(error);
+    state.loading = false;
+    setNotice(error.message, 'error');
   }
   render();
 }
+
+window.addEventListener('error', (event) => {
+  console.error(event.error || event.message);
+  setNotice(event.error?.message || event.message || 'Unexpected frontend error.', 'error');
+  render();
+});
 
 init();
