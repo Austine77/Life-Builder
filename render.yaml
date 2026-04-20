@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: sp-builder-backend
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: APP_NAME
+        value: SP Builder
+      - key: APP_BASE_URL
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: STORAGE_DIR
+        value: /opt/render/project/src/storage
+      - key: ENABLE_ANDROID_BUILDS
+        value: true
+      - key: BUILD_TIMEOUT_MS
+        value: 1800000
+      - key: MAX_PROJECTS
+        value: 500
+      - key: MAX_APP_NAME_LENGTH
+        value: 60
+      - key: MAX_LAUNCHER_NAME_LENGTH
+        value: 30
+      - key: MAX_UPLOAD_MB
+        value: 50
+      - key: ANDROID_PACKAGE_PREFIX
+        value: com.spbuilder.apps
+  - type: static_site
+    name: sp-builder-frontend
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
